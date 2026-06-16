@@ -94,6 +94,17 @@ _RECENCY_BOOST_FACTOR = 2.0
 _MODEL_FILENAME = "price_darts_model.pkl"
 _CALENDAR_LAG_POSITIONS = [-48, -96]
 
+# Number of calendar feature columns produced by _build_calendar_covariate_values().
+# Used to introspect whether a loaded model's PAST covariates include the extra
+# PD7DAY-past column (calendar-only = 7; calendar + PD7DAY = 8).
+_CALENDAR_COLUMN_COUNT = 7
+
+# Default value used to pad the PD7DAY past-covariate column when the model was
+# trained WITH PD7DAY-past but no PD7DAY forecast is available at predict time.
+# Mirrors the last-known seed in _align_pd7day_to_times so the shape is preserved
+# (avoids a past-covariate dimension mismatch) without inventing a strong signal.
+_PD7DAY_PAD_VALUE = 80.0
+
 # Region(s) that ship a pre-trained Darts price model bundled in the image.
 # The bundled model lets a fresh install produce a Darts-backed forecast on day 1
 # instead of waiting to self-train once enough live history has accumulated.
@@ -170,6 +181,11 @@ class DartsLightGBMPriceForecaster:
         # Track whether the trained model expects weather columns, so
         # predict() can match the training feature set.
         self._training_has_weather: bool = False
+        # Track whether the trained model's PAST covariates include the PD7DAY-past
+        # column (calendar-only = 7 cols; calendar + PD7DAY = 8 cols).  predict()
+        # MUST build the PAST covariates to match this exactly or Darts raises a
+        # past-covariate dimension mismatch (e.g. "8 vs 7") and the model is unused.
+        self._training_has_pd7day_past: bool = False
 
     # ------------------------------------------------------------------
     # Training
@@ -249,8 +265,10 @@ class DartsLightGBMPriceForecaster:
                 # (see module docstring for full explanation)
                 pd7day_past_values = self._align_pd7day_to_times(regular_times, pd7day_history)
                 past_cov_values = np.column_stack([calendar_values, pd7day_past_values])
+                used_pd7day_past = True
             else:
                 past_cov_values = calendar_values
+                used_pd7day_past = False
 
             past_covariate_ts = TimeSeries.from_times_and_values(
                 times_index,
@@ -325,13 +343,15 @@ class DartsLightGBMPriceForecaster:
         self._is_trained = True
         self._training_observation_count = len(observations)
         self._training_has_weather = bool(has_weather)
+        self._training_has_pd7day_past = bool(used_pd7day_past)
         _LOGGER.info(
             "DartsLightGBMPriceForecaster trained: %d observations, lags=%d, "
-            "output_chunk=%d, weather_covariates=%s",
+            "output_chunk=%d, weather_covariates=%s, pd7day_past_covariate=%s",
             len(observations),
             self._lags,
             self._output_chunk_length,
             self._training_has_weather,
+            self._training_has_pd7day_past,
         )
 
     # ------------------------------------------------------------------
@@ -428,10 +448,31 @@ class DartsLightGBMPriceForecaster:
             ]
             calendar_input = _build_calendar_covariate_values(past_cov_times)
 
-            if pd7day_forecast and len(pd7day_forecast) > 0:
-                pd7day_input_values = self._align_pd7day_to_times(past_cov_times, pd7day_forecast)
+            # Build the PAST covariates to MATCH the trained composition exactly.
+            # The model was trained with EITHER calendar-only (7 cols) OR
+            # calendar + PD7DAY-past (8 cols).  Mismatching the width here makes
+            # Darts raise a past-covariate dimension error (e.g. "8 vs 7") and the
+            # whole Darts forecast is discarded (caller falls back to isotonic).
+            if self._training_has_pd7day_past:
+                if pd7day_forecast and len(pd7day_forecast) > 0:
+                    pd7day_input_values = self._align_pd7day_to_times(
+                        past_cov_times, pd7day_forecast
+                    )
+                else:
+                    # Model expects a PD7DAY-past column but none is available now —
+                    # pad with a neutral default so the shape still matches (mirrors
+                    # the weather zero-pad path above).
+                    _LOGGER.debug(
+                        "DartsLightGBMPriceForecaster: model trained with PD7DAY-past "
+                        "but no PD7DAY forecast available; padding PD7DAY column"
+                    )
+                    pd7day_input_values = np.full(
+                        (len(past_cov_times), 1), _PD7DAY_PAD_VALUE, dtype=np.float64
+                    )
                 past_input_cov = np.column_stack([calendar_input, pd7day_input_values])
             else:
+                # Model trained calendar-only — do NOT append PD7DAY-past even if a
+                # PD7DAY forecast is available, or we'd send 8 cols to a 7-col model.
                 past_input_cov = calendar_input
 
             past_covariate_ts = TimeSeries.from_times_and_values(
@@ -521,6 +562,7 @@ class DartsLightGBMPriceForecaster:
                 _json.dump(
                     {
                         "training_has_weather": self._training_has_weather,
+                        "training_has_pd7day_past": self._training_has_pd7day_past,
                         "training_observation_count": self._training_observation_count,
                         "lags": self._lags,
                         "output_chunk_length": self._output_chunk_length,
@@ -553,6 +595,7 @@ class DartsLightGBMPriceForecaster:
                 self._model = LightGBMModel.load(model_path)
             self._is_trained = True
             # Restore training metadata so predict() uses the correct feature shape
+            meta: dict = {}
             if os.path.exists(meta_path):
                 try:
                     import json as _json
@@ -567,14 +610,39 @@ class DartsLightGBMPriceForecaster:
                         "Price Darts model meta load failed (%s); assuming no weather", meta_error
                     )
                     self._training_has_weather = False
+                    meta = {}
             else:
                 # Legacy save (no metadata) — assume no weather to be safe
                 # (will trigger zero-padding on predict, not a dimension mismatch)
                 self._training_has_weather = False
+
+            # Determine the PAST-covariate composition (does the model expect the
+            # extra PD7DAY-past column?).  Prefer the explicit meta flag; if it is
+            # ABSENT (legacy meta or none at all), INTROSPECT the loaded model's
+            # expected past-covariate width so the EXISTING bundled model works
+            # without a retrain.
+            if "training_has_pd7day_past" in meta:
+                self._training_has_pd7day_past = bool(meta.get("training_has_pd7day_past"))
+                pd7day_source = "meta"
+            else:
+                inferred_past_count = self._infer_trained_past_cov_count()
+                if inferred_past_count is None:
+                    # Could not introspect — default to False (calendar-only).
+                    self._training_has_pd7day_past = False
+                    pd7day_source = "default"
+                else:
+                    self._training_has_pd7day_past = (
+                        inferred_past_count > _CALENDAR_COLUMN_COUNT
+                    )
+                    pd7day_source = f"introspected({inferred_past_count})"
+
             _LOGGER.info(
-                "Price Darts model loaded from %s (training_has_weather=%s)",
+                "Price Darts model loaded from %s (training_has_weather=%s, "
+                "training_has_pd7day_past=%s [%s])",
                 model_path,
                 self._training_has_weather,
+                self._training_has_pd7day_past,
+                pd7day_source,
             )
             return True
         except Exception as load_error:
@@ -680,6 +748,35 @@ class DartsLightGBMPriceForecaster:
         weights = np.where(age_seconds <= recency_cutoff_seconds, _RECENCY_BOOST_FACTOR, 1.0)
 
         return times, np.array(price_values, dtype=np.float64), weights
+
+    def _infer_trained_past_cov_count(self) -> Optional[int]:
+        """Introspect how many PAST-covariate components the loaded model expects.
+
+        Darts RegressionModel exposes ``lagged_feature_names`` after fit/load — one
+        entry per (component, lag) pair, with past-covariate entries containing the
+        ``_pastcov_`` marker (e.g. ``past_0_pastcov_lag-96``).  Counting the DISTINCT
+        component prefixes recovers the past-covariate width the model was trained
+        with, even when the meta file predates the explicit flag.
+
+        Returns the component count, or None if it cannot be determined.
+        """
+        model = self._model
+        if model is None:
+            return None
+        try:
+            feature_names = getattr(model, "lagged_feature_names", None)
+            if not feature_names:
+                return None
+            components: set[str] = set()
+            for feature_name in feature_names:
+                if "_pastcov_" in feature_name:
+                    components.add(feature_name.split("_pastcov_")[0])
+            return len(components)
+        except Exception as introspect_error:  # pragma: no cover - defensive
+            _LOGGER.debug(
+                "Could not introspect past-covariate width: %s", introspect_error
+            )
+            return None
 
     @staticmethod
     def _align_pd7day_to_times(

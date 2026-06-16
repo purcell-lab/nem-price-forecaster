@@ -1,1 +1,1 @@
-{"training_has_weather": true, "training_observation_count": 16378, "lags": 96, "output_chunk_length": 48}
+{"training_has_weather": true, "training_has_pd7day_past": true, "training_observation_count": 16378, "lags": 96, "output_chunk_length": 48}

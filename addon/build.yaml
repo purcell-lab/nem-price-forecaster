@@ -1,7 +1,13 @@
 # HA Add-on build configuration
 # Specifies the official HA base images for each supported architecture.
 # The Supervisor's builder uses these as the BUILD_FROM arg in the Dockerfile.
+#
+# DEBIAN (glibc) base images — NOT the alpine (musl) base-python ones.
+# LightGBM and Darts ship manylinux (glibc) binary wheels; on a musl/alpine base
+# those wheels are rejected and pip falls back to a from-source build that
+# frequently fails, so the Darts price model never loads.  The debian base-debian
+# images give a glibc userland where the prebuilt wheels install cleanly.
 build_from:
-  aarch64: "homeassistant/aarch64-base-python:3.12-alpine3.19"
-  amd64: "homeassistant/amd64-base-python:3.12-alpine3.19"
-  armv7: "homeassistant/armv7-base-python:3.12-alpine3.19"
+  aarch64: "homeassistant/aarch64-base-debian:bookworm"
+  amd64: "homeassistant/amd64-base-debian:bookworm"
+  armv7: "homeassistant/armv7-base-debian:bookworm"
