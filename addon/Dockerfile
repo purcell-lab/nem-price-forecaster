@@ -31,6 +31,7 @@ RUN apt-get update \
         libgomp1 \
         build-essential \
         cmake \
+        jq \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies into the system interpreter.
