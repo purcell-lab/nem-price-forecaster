@@ -88,8 +88,8 @@ add-on options. The full reference lives in
 | Option | Default | Notes |
 | --- | --- | --- |
 | `region` | `NSW1` | One of `QLD1`, `NSW1`, `VIC1`, `SA1`, `TAS1`. **QLD1 ships pre-trained.** |
-| `price_model` | `hybrid` | `darts_naive_blend`, `isotonic`, `darts`, or `hybrid` (see below). |
-| `calibrator` | `monotone_gbm` | How raw PD7DAY RRP is mapped to a realised price: `isotonic` (default) or opt-in `monotone_gbm`. |
+| `price_model` | `isotonic` | `darts_naive_blend`, `isotonic`, `darts`, or `hybrid` (see below). |
+| `calibrator` | `monotone_gbm` | How raw PD7DAY RRP is mapped to a realised price: `monotone_gbm` (default, the bake-off winner) or `isotonic`. |
 | `forecast_horizon_days` | `7.0` | Forecast horizon (0.5–14 days). Validated accuracy is ≤ 7 days. |
 | `naive_blend_weight` | `0.5` | Blend weight for `darts_naive_blend` (0 = pure Darts, 1 = pure seasonal-naive). |
 | `gst_rate` | `0.10` | Applied to import prices. |
@@ -99,11 +99,11 @@ add-on options. The full reference lives in
 
 ### Price models
 
-- **`darts_naive_blend`** (default) — a 50/50 blend of a Darts LightGBM model and
+- **`darts_naive_blend`** — a 50/50 blend of a Darts LightGBM model and
   a seasonal-naive estimate (same hour, same day-of-week, one week ago). Blending
   reduces worst-case error during market regime transitions while matching
   seasonal-naive's average accuracy. Works immediately.
-- **`isotonic`** — per-hour isotonic (PAV) calibration of AEMO's PD7DAY
+- **`isotonic`** (default) — per-hour isotonic (PAV) calibration of AEMO's PD7DAY
   predispatch. Best when predispatch tracks settlement closely; weaker when
   PD7DAY diverges.
 - **`darts`** — Darts LightGBM only. Needs accumulated history to train.
@@ -112,8 +112,8 @@ add-on options. The full reference lives in
 
 ### Calibrator backend
 
-- **`isotonic`** (default) — 24 dependency-free per-hour PAV curves.
-- **`monotone_gbm`** (opt-in) — a single LightGBM regressor with a monotone
+- **`isotonic`** — 24 dependency-free per-hour PAV curves.
+- **`monotone_gbm`** (default) — a single LightGBM regressor with a monotone
   constraint on the raw forecast price plus cyclic hour/day-of-week features. It
   keeps a built-in never-lose fallback to isotonic: if it doesn't beat isotonic
   on a held-out tail (or LightGBM is unavailable), it transparently serves

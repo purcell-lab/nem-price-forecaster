@@ -191,7 +191,7 @@ class SidecarConfig:
     # Shipped default: 50/50 Darts + seasonal-naive blend.
     # Blending reduces worst-case regime-transition error vs the Darts model
     # alone while matching seasonal-naive's average accuracy.
-    price_model: str = "hybrid"
+    price_model: str = "isotonic"
 
     # Hybrid price model parameters (used only when price_model="hybrid")
     # Crossover lead time: slots with lead_time <= hybrid_crossover_hours use isotonic;
