@@ -1,0 +1,85 @@
+# NEM Price Forecaster — Home Assistant Add-on configuration
+#
+# This add-on runs the NEM Price Forecaster sidecar as a Supervisor-managed
+# container.  It has its own Python environment so it works on any HA install
+# regardless of Python version conflicts.
+#
+# Install path (for HAOS / HA Supervised):
+#   1. In the HA UI go to Settings → Add-ons → Add-on Store → ⋮ menu →
+#      "Repositories" and add the URL of your fork of this repo.
+#   OR for a local install:
+#      Copy this entire `addon/` folder to your HA config's
+#      addons/nem_price_forecaster/ directory and reload the add-on store.
+#   2. Install and start the add-on.
+#   3. In the HA integration config flow, set the Sidecar URL to:
+#      http://localhost:8765
+
+name: "NEM Price Forecaster"
+description: >
+  Configurable-horizon NEM price forecaster (default 7 days, extendable via
+  horizon-aware model chaining). Supports QLD1/NSW1/VIC1/SA1/TAS1. Uses AEMO
+  PD7DAY + isotonic calibration, Darts LightGBM, or a blended darts_naive_blend
+  model (default). Publishes import/export price forecasts as HA sensor attributes
+  for EMHASS, automations, and dashboards.
+version: "0.2.0"
+slug: "nem_price_forecaster"
+init: false
+arch:
+  - amd64
+  - aarch64
+  - armv7
+homeassistant_api: false
+hassio_api: false
+map:
+  - type: share
+    read_only: false
+    path: "/nem_forecaster_data"
+ports:
+  8765/tcp: 8765
+ports_description:
+  8765/tcp: "NEM Price Forecaster sidecar HTTP API"
+options:
+  region: "QLD1"
+  price_model: "darts_naive_blend"
+  calibrator: "isotonic"
+  naive_blend_weight: 0.5
+  forecast_horizon_days: 7.0
+  forecast_horizon_hours: 168
+  chain_seam_days: 7.0
+  chain_blend_window_hours: 12.0
+  gst_rate: 0.10
+  fixed_adder_per_kwh: 0.0
+  feed_in_is_wholesale: true
+  load_forecaster_enabled: true
+  weather_enabled: true
+  aemo_history_days: 365
+  latitude: 0.0
+  longitude: 0.0
+  hybrid_crossover_hours: 120.0
+  hybrid_blend_window_hours: 12.0
+  hybrid_blend_enabled: true
+  calibrator_adjacency_alpha: 0.5
+schema:
+  region: "str"
+  price_model: "list(darts_naive_blend|isotonic|darts|hybrid)"
+  calibrator: "list(isotonic|monotone_gbm)"
+  naive_blend_weight: "float(0,1)"
+  forecast_horizon_days: "float(0.5,14)"
+  forecast_horizon_hours: "int(1,336)"
+  chain_seam_days: "float(0.5,14)"
+  chain_blend_window_hours: "float(0,48)"
+  gst_rate: "float(0,1)"
+  fixed_adder_per_kwh: "float(-1,10)"
+  feed_in_is_wholesale: "bool"
+  load_forecaster_enabled: "bool"
+  weather_enabled: "bool"
+  aemo_history_days: "int(0,730)"
+  latitude: "float(-90,90)"
+  longitude: "float(-180,180)"
+  hybrid_crossover_hours: "float(1,168)"
+  hybrid_blend_window_hours: "float(0,48)"
+  hybrid_blend_enabled: "bool"
+  calibrator_adjacency_alpha: "float(0,1)"
+startup: "application"
+boot: "auto"
+url: "https://github.com/BrettLynch123/nem-price-forecaster"

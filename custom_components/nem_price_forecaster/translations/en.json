@@ -1,0 +1,82 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "NEM Price Forecaster — Region & Calibration",
+        "description": "Configure your NEM region and calibration settings. Available regions: {regions}",
+        "data": {
+          "region": "NEM Region",
+          "calibration_window_days": "Calibration observation window (days)",
+          "calibration_min_observations": "Minimum observations before calibration activates",
+          "plausibility_cap_dollars_per_kwh": "Price plausibility cap ($/kWh)"
+        },
+        "data_description": {
+          "region": "Your NEM dispatch region (e.g. QLD1 for Queensland)",
+          "calibration_window_days": "How many days of historical (predicted, actual) price pairs to retain for calibration. Older observations are down-weighted exponentially.",
+          "calibration_min_observations": "Number of (predicted, actual) pairs required before isotonic calibration activates. Until then, raw PD7DAY / 1000 is used.",
+          "plausibility_cap_dollars_per_kwh": "Calibrated prices above this cap are clamped. Protects against extreme market cap events propagating to retail prices."
+        }
+      },
+      "tariff": {
+        "title": "NEM Price Forecaster — Tariff Settings",
+        "description": "Configure GST, fixed network charges, and feed-in behaviour.",
+        "data": {
+          "gst_rate": "GST rate (decimal, e.g. 0.10 for 10%)",
+          "fixed_adder_per_kwh": "Fixed network adder ($/kWh, pre-GST)",
+          "feed_in_is_wholesale": "Feed-in price = wholesale (Amber-style)"
+        },
+        "data_description": {
+          "gst_rate": "Applied to import price only. Export is GST-excluded per ATO ruling.",
+          "fixed_adder_per_kwh": "Flat per-kWh network/service charge added on top of wholesale before GST. Does NOT apply to export.",
+          "feed_in_is_wholesale": "When enabled, export price = calibrated wholesale RRP ($/kWh, GST-excluded). This matches Amber's model. Disable only if your retailer offers a fixed feed-in tariff (configure as a zero-rate ToU band)."
+        }
+      },
+      "tou_bands": {
+        "title": "NEM Price Forecaster — Time-of-Use Bands",
+        "description": "Optional: enter ToU network band definitions as a JSON array. Leave as [] for flat-rate network charge.\n\nExample:\n{example}",
+        "data": {
+          "tou_bands_json": "ToU bands (JSON array)"
+        }
+      },
+      "forecast": {
+        "title": "NEM Price Forecaster — Forecast Settings",
+        "description": "Configure the forecast horizon and output resolution. PD7DAY is natively 30-min; other periods are resampled automatically. Period options: {period_options} minutes.",
+        "data": {
+          "forecast_horizon_hours": "Forecast horizon (hours)",
+          "forecast_period_minutes": "Forecast period / resolution (minutes)"
+        },
+        "data_description": {
+          "forecast_horizon_hours": "How far ahead to forecast (hours). Default 168 h = 7 days (the full PD7DAY horizon). Maximum 336 h = 14 days.",
+          "forecast_period_minutes": "Output slot resolution in minutes. 5 or 15 = upsampled via interpolation; 30 = native PD7DAY resolution (no resampling); 60 = downsampled via mean. Use 5-min when feeding EMHASS with freq=5."
+        }
+      }
+    },
+    "error": {
+      "invalid_json": "Invalid JSON. Please check your input and try again.",
+      "cannot_connect": "Failed to reach NEMWeb. Check your internet connection.",
+      "unknown": "Unexpected error during setup."
+    },
+    "abort": {
+      "already_configured": "This NEM region is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Update Tariff & Forecast Settings",
+        "data": {
+          "gst_rate": "GST rate",
+          "fixed_adder_per_kwh": "Fixed network adder ($/kWh, pre-GST)",
+          "feed_in_is_wholesale": "Feed-in price = wholesale",
+          "calibration_window_days": "Calibration window (days)",
+          "forecast_horizon_hours": "Forecast horizon (hours)",
+          "forecast_period_minutes": "Forecast period / resolution (minutes)",
+          "tou_bands_json": "ToU bands (JSON array, leave blank to keep current)"
+        }
+      }
+    },
+    "error": {
+      "invalid_json": "Invalid JSON in ToU bands field."
+    }
+  }
+}

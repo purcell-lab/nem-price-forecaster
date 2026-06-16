@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+dist/
+build/
+
+# Environments
+.env
+.venv/
+venv/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Bundled pre-trained models ARE committed — they ship inside the Docker image so
+# a fresh install is model-backed on day 1 (the Dockerfiles COPY app/ wholesale).
+# These are learned price patterns only (no personal data / coordinates / keys).
+!sidecar/app/models/
+!addon/app/models/
