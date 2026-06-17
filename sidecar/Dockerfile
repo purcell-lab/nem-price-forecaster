@@ -39,6 +39,18 @@ COPY app/ /app/
 # Persist models + calibration cache across container restarts
 VOLUME ["/data"]
 
+# Build-time identity baked into the image so /version can report which commit
+# is actually running.  Pass these from CI / docker build:
+#   --build-arg GIT_SHA=$(git rev-parse HEAD) \
+#   --build-arg GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD) \
+#   --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+ARG GIT_SHA=unknown
+ARG GIT_BRANCH=unknown
+ARG BUILD_TIME=unknown
+ENV SIDECAR_GIT_SHA=${GIT_SHA}
+ENV SIDECAR_GIT_BRANCH=${GIT_BRANCH}
+ENV SIDECAR_BUILD_TIME=${BUILD_TIME}
+
 ENV PYTHONUNBUFFERED=1
 ENV SIDECAR_DATA_DIR=/data
 

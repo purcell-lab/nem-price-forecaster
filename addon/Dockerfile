@@ -54,6 +54,22 @@ RUN chmod +x /run.sh
 # declared in config.yaml to /nem_forecaster_data inside the container.
 VOLUME ["/nem_forecaster_data"]
 
+# Build-time identity baked into the image so /version can report which commit
+# is actually running.  The HA Supervisor builder injects:
+#   BUILD_REF      git SHA of the source tree being built
+#   BUILD_DATE     ISO-8601 UTC timestamp of the build
+#   BUILD_VERSION  add-on version from config.yaml
+#   BUILD_ARCH     target architecture
+# See https://developers.home-assistant.io/docs/add-ons/configuration/#docker-build-arguments
+ARG BUILD_REF=unknown
+ARG BUILD_DATE=unknown
+ARG BUILD_VERSION=unknown
+ARG BUILD_ARCH=unknown
+ENV SIDECAR_GIT_SHA=${BUILD_REF}
+ENV SIDECAR_BUILD_TIME=${BUILD_DATE}
+ENV SIDECAR_ADDON_VERSION=${BUILD_VERSION}
+ENV SIDECAR_BUILD_ARCH=${BUILD_ARCH}
+
 ENV PYTHONUNBUFFERED=1
 ENV SIDECAR_DATA_DIR=/nem_forecaster_data
 

@@ -249,6 +249,107 @@ class ConfigUpdateRequest(BaseModel):
     )
 
 
+class PersistedFileInfo(BaseModel):
+    """On-disk inventory entry for one file under SIDECAR_DATA_DIR."""
+    path: str
+    size_bytes: int
+    modified_utc: Optional[str] = None
+    note: Optional[str] = None
+
+
+class DataInventory(BaseModel):
+    """
+    Observation/row counts for the on-disk datasets the sidecar keeps under
+    SIDECAR_DATA_DIR.  Counts answer 'how much history actually survived the
+    last Supervisor action?' at a glance, without parsing the raw files.
+
+    Fields are best-effort: a missing file reports 0; a corrupt file reports
+    None and includes a brief note.  All counts are derived by inspecting
+    files on disk at request time, NOT from in-memory state, so they reflect
+    what would be re-loaded on the next container restart.
+    """
+    calibration_import_observations: Optional[int] = Field(
+        default=None,
+        description="Rows in calibration_<region>.json -> import_observations",
+    )
+    calibration_export_observations: Optional[int] = Field(
+        default=None,
+        description="Rows in calibration_<region>.json -> export_observations",
+    )
+    load_observations: Optional[int] = Field(
+        default=None,
+        description="Rows in load_obs_<region>.json -> load_observations",
+    )
+    aemo_rrp_days_cached: int = Field(
+        default=0,
+        description="Days cached in aemo_archive/ (one JSON file per day)",
+    )
+    aemo_rrp_intervals_total: int = Field(
+        default=0,
+        description="Total 30-min RRP rows across all aemo_archive day files",
+    )
+    aemo_rrp_earliest_utc: Optional[str] = None
+    aemo_rrp_latest_utc: Optional[str] = None
+    price_darts_model_present: bool = Field(
+        default=False,
+        description="price_darts_model.pkl exists on disk",
+    )
+    load_darts_model_present: bool = Field(
+        default=False,
+        description="load_darts_model.pkl exists on disk",
+    )
+    pd7day_filename: Optional[str] = Field(
+        default=None,
+        description="NEMWeb PD7DAY ZIP filename currently held in memory",
+    )
+    pd7day_run_datetime_utc: Optional[str] = Field(
+        default=None,
+        description="PD7DAY predispatch run datetime (UTC)",
+    )
+    pd7day_region: Optional[str] = Field(
+        default=None,
+        description="Region the cached PD7DAY forecast was loaded for",
+    )
+    pd7day_slots_in_memory: Optional[int] = Field(
+        default=None,
+        description="Number of 30-min RRP slots cached in PD7DAY memory",
+    )
+    pd7day_earliest_utc: Optional[str] = Field(
+        default=None,
+        description="Interval-start UTC of the first PD7DAY slot in memory",
+    )
+    pd7day_latest_utc: Optional[str] = Field(
+        default=None,
+        description="Interval-start UTC of the last PD7DAY slot in memory",
+    )
+    notes: list[str] = Field(
+        default_factory=list,
+        description="Per-file warnings (corrupt JSON, permission denied, etc.)",
+    )
+
+
+class VersionResponse(BaseModel):
+    """
+    Build + runtime identity of the sidecar.
+
+    Lets operators answer "which commit is the container ACTUALLY running?"
+    without shelling into the supervisor.  Git SHA / build time / addon
+    version are baked at image-build time from Dockerfile ARGs; everything
+    else is observed at request time.
+    """
+    git_sha: str
+    git_branch: Optional[str] = None
+    build_time_utc: str
+    addon_version: Optional[str] = None
+    build_arch: Optional[str] = None
+    api_version: str
+    python_version: str
+    data_dir: str
+    region: str
+    persisted_files: list[PersistedFileInfo]
+    data_inventory: DataInventory
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -271,6 +372,236 @@ async def health() -> HealthResponse:
         load_model_trained=metadata.load_model_trained,
         load_training_observations=metadata.load_training_observations,
     )
+
+
+@app.get("/version", response_model=VersionResponse)
+async def version() -> VersionResponse:
+    """
+    Report build + runtime identity.
+
+    Answers questions an upgrade operator routinely needs:
+      * Which commit is the live container running?  (git_sha)
+      * When was the image built?                    (build_time_utc)
+      * Which add-on version did Supervisor install? (addon_version)
+      * Where is observation state actually written? (data_dir)
+      * What is currently persisted on disk?         (persisted_files)
+
+    Useful for verifying that a Supervisor `update` / `rebuild` / `restart`
+    actually rolled forward to the expected commit, and for confirming that
+    the calibration / load-observation JSON files survived the operation
+    (the data_dir is a host bind-mount; this endpoint shows it from the
+    container's point of view).
+
+    Build identity (git_sha, build_time_utc, addon_version, build_arch) is
+    baked at image build time via Dockerfile ARGs.  Values are 'unknown'
+    when the image is built locally without those args.  All other fields
+    are observed at request time.
+    """
+    import platform
+
+    git_sha = os.environ.get("SIDECAR_GIT_SHA", "unknown")
+    git_branch = os.environ.get("SIDECAR_GIT_BRANCH") or None
+    build_time = os.environ.get("SIDECAR_BUILD_TIME", "unknown")
+    addon_version = os.environ.get("SIDECAR_ADDON_VERSION") or None
+    build_arch = os.environ.get("SIDECAR_BUILD_ARCH") or None
+
+    data_dir = (
+        _sidecar_config.data_dir if _sidecar_config is not None
+        else os.environ.get("SIDECAR_DATA_DIR", "/data")
+    )
+    region = _sidecar_config.region if _sidecar_config is not None else "unknown"
+
+    persisted: list[PersistedFileInfo] = []
+    if os.path.isdir(data_dir):
+        # Top-level inventory (calibration, load_obs, model pickles, meta sidecars).
+        try:
+            entries = sorted(os.listdir(data_dir))
+        except OSError as listdir_error:
+            persisted.append(PersistedFileInfo(
+                path=data_dir,
+                size_bytes=0,
+                note=f"listdir failed: {listdir_error}",
+            ))
+            entries = []
+        for entry in entries:
+            full_path = os.path.join(data_dir, entry)
+            try:
+                stat_result = os.stat(full_path)
+            except OSError:
+                continue
+            if not os.path.isfile(full_path):
+                continue
+            persisted.append(PersistedFileInfo(
+                path=entry,
+                size_bytes=int(stat_result.st_size),
+                modified_utc=datetime.fromtimestamp(
+                    stat_result.st_mtime, tz=timezone.utc,
+                ).isoformat(),
+            ))
+    else:
+        persisted.append(PersistedFileInfo(
+            path=data_dir,
+            size_bytes=0,
+            note="data_dir does not exist",
+        ))
+
+    inventory = _inventory_data_dir(data_dir, region)
+    _attach_pd7day_inventory(inventory)
+
+    return VersionResponse(
+        git_sha=git_sha,
+        git_branch=git_branch,
+        build_time_utc=build_time,
+        addon_version=addon_version,
+        build_arch=build_arch,
+        api_version=app.version,
+        python_version=platform.python_version(),
+        data_dir=data_dir,
+        region=region,
+        persisted_files=persisted,
+        data_inventory=inventory,
+    )
+
+
+def _inventory_data_dir(data_dir: str, region: str) -> "DataInventory":
+    """
+    Walk SIDECAR_DATA_DIR and count rows in each known dataset.
+
+    Best-effort by design: a missing file reports 0/None, a corrupt or
+    permission-denied file reports None and adds a note.  Never raises.
+    """
+    import json as _json
+
+    notes: list[str] = []
+    calibration_import_count: Optional[int] = None
+    calibration_export_count: Optional[int] = None
+    load_obs_count: Optional[int] = None
+    aemo_days = 0
+    aemo_intervals = 0
+    aemo_earliest: Optional[str] = None
+    aemo_latest: Optional[str] = None
+    price_model_present = False
+    load_model_present = False
+
+    if not os.path.isdir(data_dir):
+        return DataInventory(notes=[f"data_dir does not exist: {data_dir}"])
+
+    calibration_path = os.path.join(data_dir, f"calibration_{region}.json")
+    if os.path.exists(calibration_path):
+        try:
+            with open(calibration_path, encoding="utf-8") as calibration_file:
+                payload = _json.load(calibration_file)
+            calibration_import_count = len(payload.get("import_observations", []))
+            calibration_export_count = len(payload.get("export_observations", []))
+        except (OSError, _json.JSONDecodeError, TypeError) as calibration_error:
+            notes.append(
+                f"calibration_{region}.json unreadable: {calibration_error}"
+            )
+    else:
+        calibration_import_count = 0
+        calibration_export_count = 0
+
+    load_obs_path = os.path.join(data_dir, f"load_obs_{region}.json")
+    if os.path.exists(load_obs_path):
+        try:
+            with open(load_obs_path, encoding="utf-8") as load_obs_file:
+                payload = _json.load(load_obs_file)
+            load_obs_count = len(payload.get("load_observations", []))
+        except (OSError, _json.JSONDecodeError, TypeError) as load_obs_error:
+            notes.append(
+                f"load_obs_{region}.json unreadable: {load_obs_error}"
+            )
+    else:
+        load_obs_count = 0
+
+    aemo_archive_dir = os.path.join(data_dir, "aemo_archive")
+    if os.path.isdir(aemo_archive_dir):
+        try:
+            aemo_files = sorted(
+                f for f in os.listdir(aemo_archive_dir)
+                if f.startswith(f"price_{region}_") and f.endswith(".json")
+            )
+        except OSError as aemo_listdir_error:
+            notes.append(f"aemo_archive listdir failed: {aemo_listdir_error}")
+            aemo_files = []
+        aemo_days = len(aemo_files)
+        for aemo_filename in aemo_files:
+            full_path = os.path.join(aemo_archive_dir, aemo_filename)
+            try:
+                with open(full_path, encoding="utf-8") as aemo_file:
+                    slots = _json.load(aemo_file)
+                if not isinstance(slots, list) or not slots:
+                    continue
+                aemo_intervals += len(slots)
+                first_iso = slots[0].get("interval_start_utc")
+                last_iso = slots[-1].get("interval_start_utc")
+                if first_iso and (aemo_earliest is None or first_iso < aemo_earliest):
+                    aemo_earliest = first_iso
+                if last_iso and (aemo_latest is None or last_iso > aemo_latest):
+                    aemo_latest = last_iso
+            except (OSError, _json.JSONDecodeError, TypeError, AttributeError) as aemo_error:
+                notes.append(f"{aemo_filename} unreadable: {aemo_error}")
+
+    price_model_present = os.path.isfile(
+        os.path.join(data_dir, "price_darts_model.pkl")
+    )
+    load_model_present = os.path.isfile(
+        os.path.join(data_dir, "load_darts_model.pkl")
+    )
+
+    return DataInventory(
+        calibration_import_observations=calibration_import_count,
+        calibration_export_observations=calibration_export_count,
+        load_observations=load_obs_count,
+        aemo_rrp_days_cached=aemo_days,
+        aemo_rrp_intervals_total=aemo_intervals,
+        aemo_rrp_earliest_utc=aemo_earliest,
+        aemo_rrp_latest_utc=aemo_latest,
+        price_darts_model_present=price_model_present,
+        load_darts_model_present=load_model_present,
+        notes=notes,
+    )
+
+
+def _attach_pd7day_inventory(inventory: "DataInventory") -> None:
+    """
+    Populate PD7DAY in-memory fields on the inventory from the live
+    PriceEngine, if it has been initialised.
+
+    PD7DAY is in-memory only — the predispatch ZIP is not persisted to
+    SIDECAR_DATA_DIR — so these fields complement the on-disk inventory
+    with what would be LOST on a container restart (until the next
+    predict cycle re-fetches PD7DAY from NEMWeb, typically within minutes).
+    Best-effort: any failure to introspect the engine adds a note and
+    leaves the PD7DAY fields unset.
+    """
+    if _price_engine is None:
+        return
+    try:
+        client = getattr(_price_engine, "_pd7day_client", None)
+        if client is None:
+            return
+        forecast = getattr(client, "_cached_forecast", None)
+        filename = getattr(client, "_cached_filename", None)
+        if filename is not None:
+            inventory.pd7day_filename = str(filename)
+        if forecast is None:
+            return
+        inventory.pd7day_region = getattr(forecast, "region", None)
+        run_dt = getattr(forecast, "run_datetime_utc", None)
+        if run_dt is not None:
+            inventory.pd7day_run_datetime_utc = run_dt.isoformat()
+        slots = list(getattr(forecast, "slots", []) or [])
+        inventory.pd7day_slots_in_memory = len(slots)
+        if slots:
+            first_dt = getattr(slots[0], "interval_start_utc", None)
+            last_dt = getattr(slots[-1], "interval_start_utc", None)
+            if first_dt is not None:
+                inventory.pd7day_earliest_utc = first_dt.isoformat()
+            if last_dt is not None:
+                inventory.pd7day_latest_utc = last_dt.isoformat()
+    except Exception as pd7day_error:  # pragma: no cover - defensive
+        inventory.notes.append(f"pd7day introspection failed: {pd7day_error}")
 
 
 @app.get("/price_forecast", response_model=PriceForecastResponse)
