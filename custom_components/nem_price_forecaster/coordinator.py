@@ -41,7 +41,8 @@ from .const import (
     DEFAULT_FORECAST_PERIOD_MINUTES,
     DEFAULT_LOAD_FORECASTER_ENABLED,
     DEFAULT_SIDECAR_URL,
-    UPDATE_INTERVAL_HOURS,
+    DEFAULT_UPDATE_INTERVAL_MINUTES,
+    CONF_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
 )
 from .sidecar_client import SidecarClient, SidecarUnavailable
@@ -139,7 +140,19 @@ class NemPriceForecastCoordinator(DataUpdateCoordinator[CoordinatorData]):
 
         self._sidecar_client = SidecarClient(self._sidecar_url)
 
-        update_interval = timedelta(hours=UPDATE_INTERVAL_HOURS)
+        # Update cadence: options-flow override > data-entry override > default.
+        # The sidecar's price-predict job runs every 5 minutes, so polling more
+        # often than ~5 minutes wastes effort; default 15 min gives ~3 companion
+        # polls per sidecar refresh cycle.
+        merged_config = {**config_entry.data, **config_entry.options}
+        update_interval_minutes = int(merged_config.get(
+            CONF_UPDATE_INTERVAL_MINUTES, DEFAULT_UPDATE_INTERVAL_MINUTES
+        ))
+        if update_interval_minutes < 1:
+            update_interval_minutes = DEFAULT_UPDATE_INTERVAL_MINUTES
+        self._update_interval_minutes = update_interval_minutes
+
+        update_interval = timedelta(minutes=update_interval_minutes)
         super().__init__(
             hass,
             _LOGGER,
@@ -195,7 +208,7 @@ class NemPriceForecastCoordinator(DataUpdateCoordinator[CoordinatorData]):
                     "Load forecast fetch failed (non-fatal): %s", load_error
                 )
 
-        next_update_utc = now_utc + timedelta(hours=UPDATE_INTERVAL_HOURS)
+        next_update_utc = now_utc + timedelta(minutes=self._update_interval_minutes)
 
         return CoordinatorData(
             forecast_slots=forecast_slots,

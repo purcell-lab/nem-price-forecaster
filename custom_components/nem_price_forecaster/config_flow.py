@@ -47,6 +47,7 @@ from .const import (
     CONF_FORECAST_HORIZON_HOURS,
     CONF_FORECAST_PERIOD_MINUTES,
     CONF_GST_RATE,
+    CONF_UPDATE_INTERVAL_MINUTES,
     CONF_PLAUSIBILITY_CAP_DOLLARS_PER_KWH,
     CONF_PRICE_MODEL,
     CONF_REGION,
@@ -63,6 +64,7 @@ from .const import (
     DEFAULT_PLAUSIBILITY_CAP_DOLLARS_PER_KWH,
     DEFAULT_PRICE_MODEL,
     DEFAULT_SIDECAR_URL,
+    DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
     FORECAST_PERIOD_OPTIONS,
     NEM_REGIONS,
@@ -474,6 +476,12 @@ class NemPriceForecastOptionsFlow(config_entries.OptionsFlow):
                         CONF_FORECAST_PERIOD_MINUTES, DEFAULT_FORECAST_PERIOD_MINUTES
                     ),
                 ): vol.In(FORECAST_PERIOD_OPTIONS),
+                vol.Optional(
+                    CONF_UPDATE_INTERVAL_MINUTES,
+                    default=current_data.get(
+                        CONF_UPDATE_INTERVAL_MINUTES, DEFAULT_UPDATE_INTERVAL_MINUTES
+                    ),
+                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=1440)),
                 vol.Optional("tou_bands_json", default=""): str,
             }
         )
