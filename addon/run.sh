@@ -62,8 +62,17 @@ if [ "${LATITUDE}" != "0.0" ] || [ "${LONGITUDE}" != "0.0" ]; then
     export SIDECAR_LONGITUDE="${LONGITUDE}"
 fi
 
-# Data directory — mapped by Supervisor from share/nem_forecaster_data
-export SIDECAR_DATA_DIR=/nem_forecaster_data
+# Data directory.
+#
+# The Supervisor maps the host /share directory onto /nem_forecaster_data
+# inside the container (see config.yaml `map:` block).  /share is shared
+# with other add-ons (EMHASS, etc.), so NPF writes into a dedicated
+# subdirectory to keep its state isolated:
+#   host:      /share/nem_forecaster_data/
+#   container: /nem_forecaster_data/nem_forecaster_data/
+# Legacy installs that wrote at the parent path are auto-migrated on first
+# startup; see sidecar/app/main.py::_migrate_legacy_data_dir.
+export SIDECAR_DATA_DIR=/nem_forecaster_data/nem_forecaster_data
 
 log "Region: ${SIDECAR_REGION}, Price model: ${SIDECAR_PRICE_MODEL}, Calibrator: ${SIDECAR_CALIBRATOR}, Horizon: ${SIDECAR_FORECAST_HORIZON_HOURS}h"
 log "Weather: ${SIDECAR_WEATHER_ENABLED}, Load forecaster: ${SIDECAR_LOAD_FORECASTER_ENABLED}"
