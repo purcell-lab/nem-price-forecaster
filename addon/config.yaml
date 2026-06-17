@@ -82,4 +82,4 @@ schema:
   calibrator_adjacency_alpha: "float(0,1)"
 startup: "application"
 boot: "auto"
-url: "https://github.com/BrettLynch123/nem-price-forecaster"
+url: "https://github.com/purcell-lab/nem-price-forecaster"

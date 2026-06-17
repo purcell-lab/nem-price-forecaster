@@ -4,7 +4,7 @@
   "version": "0.2.0",
   "config_flow": true,
   "documentation": "https://github.com/BrettLynch123/nem-price-forecaster",
-  "issue_tracker": "https://github.com/BrettLynch123/nem-price-forecaster/issues",
+  "issue_tracker": "https://github.com/purcell-lab/nem-price-forecaster/issues",
   "codeowners": ["@BrettLynch123"],
   "requirements": [
     "numpy>=1.24.0"
