@@ -38,11 +38,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import sys
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, status
 from pydantic import BaseModel, Field
@@ -81,6 +82,104 @@ _scheduler = None
 _config_lock = threading.Lock()
 
 
+# ---------------------------------------------------------------------------
+# Data-dir auto-migration
+# ---------------------------------------------------------------------------
+#
+# Background: in the HA add-on, the Supervisor maps /share onto
+# /nem_forecaster_data inside the container.  Historically the sidecar wrote
+# directly under that mount, which co-mingled NPF files with other add-ons
+# that share /share (e.g. EMHASS).
+#
+# To isolate NPF state we now point SIDECAR_DATA_DIR at a SUBDIRECTORY of the
+# mount (e.g. /nem_forecaster_data/nem_forecaster_data).  On first start after
+# the upgrade, NPF-pattern files at the legacy parent path are moved into the
+# new subdir so we preserve observations / calibration / archive across the
+# rename.  The function is idempotent: if the new subdir already contains a
+# given file, the legacy copy is left alone (operator can clean up manually).
+#
+# Only files matching known NPF patterns are touched.  EMHASS pickles, weather
+# caches, etc. at the parent are never moved.
+# ---------------------------------------------------------------------------
+
+# Filename patterns owned by NPF.  Anything under the parent that does NOT
+# match one of these patterns is left untouched.
+_NPF_FILE_PATTERNS = (
+    "calibration_",      # calibration_<region>.json
+    "load_obs_",         # load_obs_<region>.json
+    "price_darts_model", # price_darts_model.pkl + .meta.json
+    "load_darts_model",  # load_darts_model.pkl + .meta.json
+)
+_NPF_DIR_NAMES = ("aemo_archive",)
+
+
+def _is_npf_owned(name: str) -> bool:
+    """True if a file/dir basename belongs to NPF (and may be migrated)."""
+    if name in _NPF_DIR_NAMES:
+        return True
+    return any(name.startswith(p) for p in _NPF_FILE_PATTERNS)
+
+
+def _migrate_legacy_data_dir(data_dir: str) -> List[str]:
+    """Move NPF files from the legacy parent path into ``data_dir``.
+
+    Only invoked when ``data_dir`` is a subdirectory of a mount root that
+    might still contain legacy NPF files at the parent level.  Returns the
+    list of basenames that were moved (for logging / introspection).
+
+    Idempotent: safe to call on every startup.
+    """
+    parent = os.path.dirname(os.path.normpath(data_dir))
+    if not parent or parent == "/" or not os.path.isdir(parent):
+        return []
+    # Guard: only migrate when the parent looks like the addon share mount.
+    # We refuse to migrate from "/" or from arbitrary user paths to avoid
+    # surprising behaviour for standalone deployments.
+    if not parent.startswith("/nem_forecaster_data"):
+        return []
+
+    moved: List[str] = []
+    try:
+        entries = os.listdir(parent)
+    except OSError as exc:
+        _LOGGER.warning("data_dir migration: cannot list %s: %s", parent, exc)
+        return []
+
+    for name in entries:
+        # Skip the new subdir itself.
+        if name == os.path.basename(os.path.normpath(data_dir)):
+            continue
+        if not _is_npf_owned(name):
+            continue
+        src = os.path.join(parent, name)
+        dst = os.path.join(data_dir, name)
+        if os.path.exists(dst):
+            _LOGGER.info(
+                "data_dir migration: %s already exists at new path, leaving legacy copy at %s",
+                name,
+                src,
+            )
+            continue
+        try:
+            shutil.move(src, dst)
+            moved.append(name)
+            _LOGGER.info("data_dir migration: moved %s -> %s", src, dst)
+        except OSError as exc:
+            _LOGGER.warning(
+                "data_dir migration: failed to move %s -> %s: %s", src, dst, exc
+            )
+
+    if moved:
+        _LOGGER.info(
+            "data_dir migration: moved %d NPF entr%s from %s into %s",
+            len(moved),
+            "y" if len(moved) == 1 else "ies",
+            parent,
+            data_dir,
+        )
+    return moved
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -99,6 +198,13 @@ async def lifespan(app: FastAPI):
     )
 
     os.makedirs(_sidecar_config.data_dir, exist_ok=True)
+
+    # Migrate any legacy NPF files from the parent share path into the new
+    # subdirectory layout.  Idempotent; only moves NPF-owned filenames.
+    try:
+        _migrate_legacy_data_dir(_sidecar_config.data_dir)
+    except Exception as exc:  # never let migration kill startup
+        _LOGGER.exception("data_dir migration raised; continuing: %s", exc)
 
     _forecast_cache = ForecastCache()
     _forecast_cache.update_metadata(
