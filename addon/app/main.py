@@ -413,8 +413,13 @@ async def trigger_price_predict(background_tasks: BackgroundTasks) -> TriggerRes
     Runs in the background; returns immediately.
     """
     _assert_ready()
-    background_tasks.add_task(_price_predict_job, _price_engine)
-    return TriggerResponse(triggered=True, message="Price predict cycle enqueued")
+    # The shared scheduled job (_price_predict_job) calls run_predict_cycle()
+    # WITHOUT force=True, so it can early-out via change detection — meaning
+    # /trigger/price was a no-op whenever the engine considered the cache
+    # fresh.  The docstring promised force=True; honour it by invoking the
+    # engine directly.
+    background_tasks.add_task(_price_engine.run_predict_cycle, True)
+    return TriggerResponse(triggered=True, message="Price predict cycle enqueued (force=True)")
 
 
 @app.post("/trigger/train", response_model=TriggerResponse)

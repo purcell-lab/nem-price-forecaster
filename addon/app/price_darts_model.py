@@ -426,9 +426,52 @@ class DartsLightGBMPriceForecaster:
             else:
                 padded_obs = recent_observations
 
-            tail_times = [obs.interval_start_utc.replace(tzinfo=None) for obs in padded_obs]
-            tail_values = np.array([obs.rrp_per_mwh for obs in padded_obs], dtype=np.float64)
-            input_ts = TimeSeries.from_times_and_values(pd.DatetimeIndex(tail_times), tail_values)
+            # Build the (time, value) sequence then dedupe + sort it so the
+            # resulting DatetimeIndex has a strict 30-minute frequency.  Without
+            # this guard, an upstream duplicate or out-of-order observation
+            # would make pandas infer freq=None on the index, which causes
+            # Darts to raise `ValueError: The frequency of the provided series
+            # is not given. Please provide it with the `freq` argument.` and
+            # the entire Darts forecast is discarded (caller falls back to
+            # isotonic for the whole horizon).
+            raw_pairs = [
+                (obs.interval_start_utc.replace(tzinfo=None), float(obs.rrp_per_mwh))
+                for obs in padded_obs
+            ]
+            # Last-write-wins on duplicates, then sort ascending.
+            dedup_pairs: dict[datetime, float] = {}
+            for t, v in raw_pairs:
+                dedup_pairs[t] = v
+            sorted_pairs = sorted(dedup_pairs.items(), key=lambda kv: kv[0])
+            tail_times = [t for t, _ in sorted_pairs]
+            tail_values = np.array([v for _, v in sorted_pairs], dtype=np.float64)
+
+            # Verify strict 30-minute monotonic spacing; if a gap is detected
+            # (e.g. missing dispatch), reindex onto a regular 30-min grid
+            # spanning [min, max] and forward-fill so the inferred freq is
+            # well-defined.
+            expected_freq = pd.Timedelta(minutes=30)
+            needs_reindex = False
+            for prev, nxt in zip(tail_times, tail_times[1:]):
+                if nxt - prev != expected_freq:
+                    needs_reindex = True
+                    break
+            if needs_reindex:
+                regular_index = pd.date_range(
+                    start=tail_times[0],
+                    end=tail_times[-1],
+                    freq="30min",
+                )
+                series = pd.Series(tail_values, index=pd.DatetimeIndex(tail_times))
+                series = series[~series.index.duplicated(keep="last")]
+                series = series.reindex(regular_index).ffill().bfill()
+                tail_times = list(regular_index.to_pydatetime())
+                tail_values = series.to_numpy(dtype=np.float64)
+
+            # Pass an explicit freq so Darts never has to guess it.
+            input_ts = TimeSeries.from_times_and_values(
+                pd.DatetimeIndex(tail_times, freq="30min"), tail_values
+            )
 
             # ---- Autoregression tail length ----
             # When num_slots > output_chunk_length, Darts auto-regresses and needs
@@ -476,7 +519,7 @@ class DartsLightGBMPriceForecaster:
                 past_input_cov = calendar_input
 
             past_covariate_ts = TimeSeries.from_times_and_values(
-                pd.DatetimeIndex(past_cov_times),
+                pd.DatetimeIndex(past_cov_times, freq="30min"),
                 past_input_cov,
             )
 
@@ -518,7 +561,7 @@ class DartsLightGBMPriceForecaster:
                 future_cov_values = future_calendar_values
 
             future_covariate_ts = TimeSeries.from_times_and_values(
-                pd.DatetimeIndex(all_future_cov_times),
+                pd.DatetimeIndex(all_future_cov_times, freq="30min"),
                 future_cov_values,
             )
 
