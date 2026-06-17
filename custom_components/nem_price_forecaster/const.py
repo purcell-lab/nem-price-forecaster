@@ -39,7 +39,16 @@ PAV_HOUR_BUCKETS = 24  # one isotonic curve per hour-of-day
 CALIBRATION_RECENCY_HALF_LIFE_DAYS = 30  # exponential decay for observation weighting
 
 # Coordinator update interval
-UPDATE_INTERVAL_HOURS = 4  # PD7DAY publishes ~3×/day; poll slightly more often
+# The sidecar runs its price-predict job every 5 minutes (apscheduler), so the
+# HA companion needs to poll meaningfully more often than the PD7DAY 3×/day
+# cadence to surface fresh isotonic-calibrated and (eventually) sub-PD7DAY
+# updates.  15 minutes is a good balance — three companion polls per sidecar
+# refresh cycle without hammering it.  Configurable via the integration options
+# flow (CONF_UPDATE_INTERVAL_MINUTES).
+DEFAULT_UPDATE_INTERVAL_MINUTES = 15
+CONF_UPDATE_INTERVAL_MINUTES = "update_interval_minutes"
+# Kept for backward compatibility with existing config entries / external code.
+UPDATE_INTERVAL_HOURS = DEFAULT_UPDATE_INTERVAL_MINUTES / 60
 
 # Sensor attributes
 ATTR_FORECAST = "forecast"  # list of {interval_start, import_price, export_price, raw_rrp}
