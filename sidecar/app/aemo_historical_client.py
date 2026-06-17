@@ -357,23 +357,52 @@ class AemoHistoricalClient:
         """
         try:
             with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zip_file:
-                csv_names = [
-                    name for name in zip_file.namelist()
-                    if name.upper().endswith(".CSV")
-                ]
-                if not csv_names:
+                names = zip_file.namelist()
+                csv_names = [name for name in names if name.upper().endswith(".CSV")]
+                inner_zip_names = [name for name in names if name.upper().endswith(".ZIP")]
+
+                # The NEMWeb DISPATCHIS archive ships a daily outer ZIP containing
+                # 288 nested per-dispatch-interval ZIPs (one per 5-min run), each
+                # of which contains exactly one MMSDM CSV. Earlier MMSDM archives
+                # sometimes shipped a single flat CSV inside the daily ZIP. Handle
+                # both layouts so the code works against the live and legacy
+                # archive formats.
+                if not csv_names and not inner_zip_names:
                     _LOGGER.warning(
-                        "AemoHistoricalClient: no CSV inside ZIP for %s",
+                        "AemoHistoricalClient: no CSV or nested ZIP inside archive for %s",
                         target_date.isoformat(),
                     )
                     return []
 
-                # There may be multiple CSVs inside a day's ZIP (one per run-type)
                 five_min_slots: dict[datetime, list[float]] = {}
 
+                # Flat-CSV layout (legacy)
                 for csv_name in csv_names:
                     csv_text = zip_file.read(csv_name).decode("utf-8", errors="replace")
                     self._parse_dispatch_csv(csv_text, five_min_slots)
+
+                # Nested ZIP layout (current NEMWeb archive)
+                for inner_zip_name in inner_zip_names:
+                    try:
+                        inner_bytes = zip_file.read(inner_zip_name)
+                        with zipfile.ZipFile(io.BytesIO(inner_bytes)) as inner_zip:
+                            inner_csv_names = [
+                                inner_name for inner_name in inner_zip.namelist()
+                                if inner_name.upper().endswith(".CSV")
+                            ]
+                            for inner_csv_name in inner_csv_names:
+                                csv_text = inner_zip.read(inner_csv_name).decode(
+                                    "utf-8", errors="replace"
+                                )
+                                self._parse_dispatch_csv(csv_text, five_min_slots)
+                    except (zipfile.BadZipFile, KeyError) as inner_error:
+                        _LOGGER.debug(
+                            "AemoHistoricalClient: bad inner ZIP %s for %s: %s",
+                            inner_zip_name,
+                            target_date.isoformat(),
+                            inner_error,
+                        )
+                        continue
 
         except zipfile.BadZipFile as zip_error:
             _LOGGER.warning(
