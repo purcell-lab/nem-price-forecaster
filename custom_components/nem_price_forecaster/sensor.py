@@ -112,6 +112,12 @@ class _NemPriceBaseSensor(CoordinatorEntity[NemPriceForecastCoordinator], Sensor
     _attr_native_unit_of_measurement = UNIT_DOLLARS_PER_KWH
     _attr_suggested_display_precision = 4
     _attr_has_entity_name = True
+    # The full resampled price forecast is a multi-day list of dicts that
+    # exceeds the recorder's 16384-byte per-state attribute cap, producing
+    # "State attributes ... exceed maximum size of 16384 bytes" warnings and
+    # bloating the database. Keep it live for templates/EMHASS but never
+    # persist it.
+    _unrecorded_attributes = frozenset({ATTR_FORECAST})
 
     def __init__(
         self,
@@ -285,6 +291,10 @@ class NemLoadForecastSensor(CoordinatorEntity[NemPriceForecastCoordinator], Sens
     _attr_suggested_display_precision = 0
     _attr_has_entity_name = True
     _attr_icon = "mdi:home-lightning-bolt"
+    # The full resampled load forecast is a multi-day list of dicts that
+    # exceeds the recorder's 16384-byte per-state attribute cap. Keep it
+    # live for templates/EMHASS but never persist it.
+    _unrecorded_attributes = frozenset({ATTR_LOAD_FORECAST})
 
     def __init__(
         self,
